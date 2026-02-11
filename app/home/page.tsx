@@ -9,38 +9,65 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { MessageSquare, ThumbsUp, Eye } from 'lucide-react'
 import Link from 'next/link'
 import { useLanguage } from '@/lib/language-context'
-import { readJSON } from '@/lib/storage'
 import { useMyProfile } from '@/hooks/use-my-profile'
 
 interface Post {
   id: string
+  author_id: string
+  author_name: string
+  author_username: string | null
+  category: string
   title: string
   content: string
-  author: string
-  authorId: string
-  category: string
-  likes: number
-  dislikes: number
-  comments: any[]
-  views: number
-  createdAt: string
-  isAnonymous?: boolean
+  is_anonymous: boolean
+  created_at: string
+  likes_count: number
+  comments_count: number
 }
 
 export default function HomePage() {
   const router = useRouter()
   const { t } = useLanguage()
   const [posts, setPosts] = useState<Post[]>([])
-  const { profile, isLoading } = useMyProfile()
+  const [isPostsLoading, setIsPostsLoading] = useState(true)
+  const [postsError, setPostsError] = useState<string | null>(null)
+  const { profile, isLoading, supabase } = useMyProfile()
 
   useEffect(() => {
-    if (!isLoading && !profile) {
+    if (isLoading) return
+    if (!profile) {
       router.push('/login')
       return
     }
-    const savedPosts = readJSON<Post[]>('kgscp_posts', [])
-    setPosts(Array.isArray(savedPosts) ? savedPosts.slice(0, 10) : [])
-  }, [router, isLoading, profile])
+
+    let isActive = true
+    ;(async () => {
+      setIsPostsLoading(true)
+      setPostsError(null)
+      const { data, error } = await supabase
+        .from('post_summaries')
+        .select(
+          'id, author_id, author_name, author_username, category, title, content, is_anonymous, created_at, likes_count, comments_count'
+        )
+        .order('created_at', { ascending: false })
+        .limit(10)
+
+      if (!isActive) return
+      if (error) {
+        setPosts([])
+        setPostsError(error.message)
+        setIsPostsLoading(false)
+        return
+      }
+
+      setPosts((data as Post[]) || [])
+      setIsPostsLoading(false)
+    })()
+
+    return () => {
+      isActive = false
+    }
+  }, [router, isLoading, profile, supabase])
 
   if (isLoading) {
     return (
@@ -72,6 +99,8 @@ export default function HomePage() {
     return date.toLocaleDateString('ko-KR')
   }
 
+  const profileInitial = profile.name?.trim()?.charAt(0) || 'U'
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
       <MainNav />
@@ -83,7 +112,7 @@ export default function HomePage() {
               <div className="flex flex-col items-center text-center">
                 <Avatar className="h-20 w-20 mb-4">
                   <AvatarFallback className="bg-indigo-600 text-white text-2xl">
-                    {profile.name.charAt(0)}
+                    {profileInitial}
                   </AvatarFallback>
                 </Avatar>
                 <h3 className="font-bold text-lg">{profile.name}</h3>
@@ -108,6 +137,20 @@ export default function HomePage() {
             </div>
 
             <div className="space-y-4">
+              {isPostsLoading && (
+                <Card className="p-12 text-center">
+                  <p className="text-muted-foreground">{t('loading')}</p>
+                </Card>
+              )}
+
+              {!isPostsLoading && postsError && (
+                <Card className="p-12 text-center">
+                  <p className="text-muted-foreground">
+                    {t('loading')} 실패: {postsError}
+                  </p>
+                </Card>
+              )}
+
               {posts.map((post) => (
                 <Card key={post.id} className="hover:shadow-md transition-shadow">
                   <Link href={`/boards/${post.id}`}>
@@ -116,19 +159,19 @@ export default function HomePage() {
                         <div className="flex items-center gap-3 flex-1">
                           <Avatar className="h-10 w-10">
                             <AvatarFallback className="bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">
-                              {post.isAnonymous ? '?' : post.author.charAt(0)}
+                              {post.is_anonymous ? '?' : post.author_name?.trim()?.charAt(0) || 'U'}
                             </AvatarFallback>
                           </Avatar>
                           <div>
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-semibold text-sm">
-                                {post.isAnonymous ? t('anonymous') : post.author}
+                                {post.is_anonymous ? t('anonymous') : post.author_name}
                               </span>
                               <Badge variant="outline" className="text-xs">
                                 {post.category}
                               </Badge>
                               <span className="text-xs text-muted-foreground">
-                                {formatDate(post.createdAt)}
+                                {formatDate(post.created_at)}
                               </span>
                             </div>
                           </div>
@@ -142,15 +185,15 @@ export default function HomePage() {
                       <div className="flex items-center gap-4 text-sm text-muted-foreground mt-4">
                         <span className="flex items-center gap-1">
                           <ThumbsUp className="h-4 w-4" />
-                          {post.likes || 0}
+                          {post.likes_count || 0}
                         </span>
                         <span className="flex items-center gap-1">
                           <MessageSquare className="h-4 w-4" />
-                          {Array.isArray(post.comments) ? post.comments.length : 0}
+                          {post.comments_count || 0}
                         </span>
                         <span className="flex items-center gap-1">
                           <Eye className="h-4 w-4" />
-                          {post.views || 0}
+                          0
                         </span>
                       </div>
                     </CardContent>
@@ -158,7 +201,7 @@ export default function HomePage() {
                 </Card>
               ))}
 
-              {posts.length === 0 && (
+              {!isPostsLoading && !postsError && posts.length === 0 && (
                 <Card className="p-12 text-center">
                   <p className="text-muted-foreground">{t('noPosts')}</p>
                 </Card>

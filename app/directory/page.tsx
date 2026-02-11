@@ -10,27 +10,56 @@ import { Input } from '@/components/ui/input'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Search, MessageSquare } from 'lucide-react'
 import Link from 'next/link'
-import { readJSON } from '@/lib/storage'
 import { useMyProfile } from '@/hooks/use-my-profile'
 
 interface Student {
   id: string
   name: string
-  grade: number
-  bio: string
-  interests: string[]
-  email: string
+  grade: number | null
+  class_number: string | null
+  bio: string | null
 }
 
 export default function DirectoryPage() {
   const router = useRouter()
   const [selectedGrade, setSelectedGrade] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
-  const { profile, isLoading } = useMyProfile()
+  const [students, setStudents] = useState<Student[]>([])
+  const [isStudentsLoading, setIsStudentsLoading] = useState(true)
+  const [studentsError, setStudentsError] = useState<string | null>(null)
+  const { profile, isLoading, supabase } = useMyProfile()
 
   useEffect(() => {
-    if (!isLoading && !profile) router.push('/login')
-  }, [router, isLoading, profile])
+    if (isLoading) return
+    if (!profile) {
+      router.push('/login')
+      return
+    }
+
+    let isActive = true
+    ;(async () => {
+      setIsStudentsLoading(true)
+      setStudentsError(null)
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, name, grade, class_number, bio')
+        .order('name', { ascending: true })
+
+      if (!isActive) return
+      if (error) {
+        setStudents([])
+        setStudentsError(error.message)
+        setIsStudentsLoading(false)
+        return
+      }
+      setStudents(((data as Student[]) || []).filter((s) => s.id !== profile.id))
+      setIsStudentsLoading(false)
+    })()
+
+    return () => {
+      isActive = false
+    }
+  }, [router, isLoading, profile, supabase])
 
   if (isLoading) {
     return null
@@ -40,10 +69,7 @@ export default function DirectoryPage() {
     return null
   }
 
-  const registeredUsers = readJSON<any[]>('kgscp_registered_users', [])
-  const safeRegisteredUsers = Array.isArray(registeredUsers) ? registeredUsers : []
-  
-  const filteredStudents = safeRegisteredUsers.filter((student: any) => {
+  const filteredStudents = students.filter((student) => {
     const matchesSearch = student.name.toLowerCase().includes(searchQuery.toLowerCase())
     const matchesGrade = selectedGrade === null || student.grade === selectedGrade
     return matchesSearch && matchesGrade
@@ -92,19 +118,21 @@ export default function DirectoryPage() {
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {filteredStudents.map((student: any) => (
+          {!isStudentsLoading &&
+            !studentsError &&
+            filteredStudents.map((student) => (
             <Card key={student.id} className="hover:shadow-md transition-shadow">
               <CardContent className="pt-6">
                 <Link href={`/directory/${student.id}`}>
                   <div className="flex flex-col items-center text-center mb-4">
                     <Avatar className="h-16 w-16 mb-3">
                       <AvatarFallback className="bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300 text-xl">
-                        {student.name.charAt(0)}
+                        {student.name?.trim()?.charAt(0) || 'U'}
                       </AvatarFallback>
                     </Avatar>
                     <h3 className="font-semibold text-lg">{student.name}</h3>
                     <Badge variant="secondary" className="mt-1">
-                      G{student.grade}
+                      G{student.grade ?? '-'}
                     </Badge>
                   </div>
 
@@ -127,10 +155,22 @@ export default function DirectoryPage() {
                 </Button>
               </CardContent>
             </Card>
-          ))}
+            ))}
         </div>
 
-        {filteredStudents.length === 0 && (
+        {isStudentsLoading && (
+          <Card className="p-12 text-center">
+            <p className="text-muted-foreground">로딩중...</p>
+          </Card>
+        )}
+
+        {!isStudentsLoading && studentsError && (
+          <Card className="p-12 text-center">
+            <p className="text-muted-foreground">불러오기 실패: {studentsError}</p>
+          </Card>
+        )}
+
+        {!isStudentsLoading && !studentsError && filteredStudents.length === 0 && (
           <Card className="p-12 text-center">
             <p className="text-muted-foreground">학생이 없습니다</p>
           </Card>

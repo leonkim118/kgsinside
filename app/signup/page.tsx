@@ -35,57 +35,59 @@ export default function SignupPage() {
     }
 
     setIsLoading(true)
-    
-    setTimeout(async () => {
-      try {
-        const supabase = supabaseBrowser()
-        const { data, error } = await supabase.auth.signUp({
-          email: formData.email,
-          password: formData.password,
-          options: {
-            data: {
-              name: formData.name,
-              username: formData.username,
-            },
-          },
-        })
 
-        if (error) {
-          alert(t('signupFailed') + ': ' + error.message)
+    try {
+      const supabase = supabaseBrowser()
+      const parsedGrade = formData.grade ? parseInt(formData.grade, 10) : null
+      const classNumber = formData.classNumber.trim() || null
+      const { data, error } = await supabase.auth.signUp({
+        email: formData.email.trim(),
+        password: formData.password,
+        options: {
+          data: {
+            name: formData.name.trim(),
+            username: formData.username.trim() || null,
+            grade: parsedGrade,
+            class_number: classNumber,
+          },
+        },
+      })
+
+      if (error) {
+        alert(t('signupFailed') + ': ' + error.message)
+        return
+      }
+
+      const userId = data.user?.id
+      if (userId && data.session) {
+        const { error: profileError } = await supabase.from('profiles').upsert(
+          {
+            id: userId,
+            username: formData.username.trim() || null,
+            name: formData.name.trim(),
+            grade: parsedGrade,
+            class_number: classNumber,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'id' }
+        )
+
+        if (profileError) {
+          alert(t('profileCreateFailed') + ': ' + profileError.message)
           return
         }
-
-        const userId = data.user?.id
-        if (userId && data.session) {
-          const { error: profileError } = await supabase.from('profiles').upsert(
-            {
-              id: userId,
-              username: formData.username || null,
-              name: formData.name,
-              grade: formData.grade ? parseInt(formData.grade) : null,
-              class_number: formData.classNumber || null,
-              updated_at: new Date().toISOString(),
-            },
-            { onConflict: 'id' }
-          )
-
-          if (profileError) {
-            alert(t('profileCreateFailed') + ': ' + profileError.message)
-            return
-          }
-        }
-
-        if (data.session) {
-          alert(t('signupSuccess'))
-          router.push('/home')
-        } else {
-          alert(t('signupCheckEmail'))
-          router.push('/login')
-        }
-      } finally {
-        setIsLoading(false)
       }
-    }, 500)
+
+      if (data.session) {
+        alert(t('signupSuccess'))
+        router.push('/home')
+      } else {
+        alert(t('signupCheckEmail'))
+        router.push('/login')
+      }
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (

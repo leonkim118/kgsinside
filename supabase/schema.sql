@@ -23,16 +23,19 @@ create table if not exists public.profiles (
 
 alter table public.profiles enable row level security;
 
+drop policy if exists "profiles are readable by authenticated users" on public.profiles;
 create policy "profiles are readable by authenticated users"
 on public.profiles for select
 to authenticated
 using (true);
 
+drop policy if exists "users can insert their own profile" on public.profiles;
 create policy "users can insert their own profile"
 on public.profiles for insert
 to authenticated
 with check (auth.uid() = id);
 
+drop policy if exists "users can update their own profile" on public.profiles;
 create policy "users can update their own profile"
 on public.profiles for update
 to authenticated
@@ -57,22 +60,26 @@ create index if not exists posts_category_idx on public.posts (category);
 
 alter table public.posts enable row level security;
 
+drop policy if exists "posts readable by authenticated users" on public.posts;
 create policy "posts readable by authenticated users"
 on public.posts for select
 to authenticated
 using (true);
 
+drop policy if exists "posts insertable by authenticated users" on public.posts;
 create policy "posts insertable by authenticated users"
 on public.posts for insert
 to authenticated
 with check (auth.uid() = author_id);
 
+drop policy if exists "posts updatable by owner" on public.posts;
 create policy "posts updatable by owner"
 on public.posts for update
 to authenticated
 using (auth.uid() = author_id)
 with check (auth.uid() = author_id);
 
+drop policy if exists "posts deletable by owner" on public.posts;
 create policy "posts deletable by owner"
 on public.posts for delete
 to authenticated
@@ -95,16 +102,19 @@ create index if not exists comments_parent_idx on public.comments (parent_commen
 
 alter table public.comments enable row level security;
 
+drop policy if exists "comments readable by authenticated users" on public.comments;
 create policy "comments readable by authenticated users"
 on public.comments for select
 to authenticated
 using (true);
 
+drop policy if exists "comments insertable by authenticated users" on public.comments;
 create policy "comments insertable by authenticated users"
 on public.comments for insert
 to authenticated
 with check (auth.uid() = author_id);
 
+drop policy if exists "comments deletable by owner" on public.comments;
 create policy "comments deletable by owner"
 on public.comments for delete
 to authenticated
@@ -129,22 +139,26 @@ create table if not exists public.reactions (
 
 alter table public.reactions enable row level security;
 
+drop policy if exists "reactions readable by authenticated users" on public.reactions;
 create policy "reactions readable by authenticated users"
 on public.reactions for select
 to authenticated
 using (true);
 
+drop policy if exists "users can upsert their own reaction" on public.reactions;
 create policy "users can upsert their own reaction"
 on public.reactions for insert
 to authenticated
 with check (auth.uid() = user_id);
 
+drop policy if exists "users can update their own reaction" on public.reactions;
 create policy "users can update their own reaction"
 on public.reactions for update
 to authenticated
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
 
+drop policy if exists "users can delete their own reaction" on public.reactions;
 create policy "users can delete their own reaction"
 on public.reactions for delete
 to authenticated
@@ -174,19 +188,21 @@ create index if not exists messages_sender_idx on public.messages (sender_id, cr
 
 alter table public.messages enable row level security;
 
+drop policy if exists "messages readable by sender or receiver" on public.messages;
 create policy "messages readable by sender or receiver"
 on public.messages for select
 to authenticated
 using (auth.uid() = sender_id or auth.uid() = receiver_id);
 
+drop policy if exists "messages insertable by sender" on public.messages;
 create policy "messages insertable by sender"
 on public.messages for insert
 to authenticated
 with check (auth.uid() = sender_id);
 
+drop policy if exists "receiver can update status" on public.messages;
 create policy "receiver can update status"
 on public.messages for update
 to authenticated
 using (auth.uid() = receiver_id)
 with check (auth.uid() = receiver_id);
-

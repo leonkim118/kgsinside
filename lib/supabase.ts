@@ -11,9 +11,13 @@ const getSupabaseEnv = () => {
   return { url, anonKey }
 }
 
+let browserClient: SupabaseClient | null = null
+
 export const supabaseBrowser = (): SupabaseClient => {
+  if (browserClient) return browserClient
   const { url, anonKey } = getSupabaseEnv()
-  return createClient(url, anonKey)
+  browserClient = createClient(url, anonKey)
+  return browserClient
 }
 
 export const supabaseWithAuth = (accessToken?: string): SupabaseClient => {
@@ -28,4 +32,3 @@ export const supabaseWithAuth = (accessToken?: string): SupabaseClient => {
       : undefined,
   })
 }
-

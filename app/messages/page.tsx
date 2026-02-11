@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MainNav } from '@/components/main-nav'
 import { useRouter } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -9,72 +9,82 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
-import { Search, Send, Check, X, Clock, MessageSquare } from 'lucide-react'
+import { Send, Check, X, Clock, MessageSquare } from 'lucide-react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import { useLanguage } from '@/lib/language-context'
-import { readJSON, writeJSON } from '@/lib/storage'
 import { useMyProfile } from '@/hooks/use-my-profile'
 
-interface IncomingMessage {
+type MessageStatus = 'pending' | 'accepted' | 'rejected' | 'on_hold'
+
+interface MessageRow {
   id: string
-  senderId: string
-  senderName: string
+  sender_id: string
+  receiver_id: string
   type: string
   content: string
-  timestamp: string
-  status: 'pending' | 'accepted' | 'rejected' | 'on-hold'
+  status: MessageStatus
+  created_at: string
 }
 
-interface OutgoingMessage {
+interface StudentOption {
   id: string
-  receiverId: string
-  receiverName: string
-  type: string
-  content: string
-  timestamp: string
-  status: 'pending' | 'accepted' | 'rejected' | 'on-hold'
-}
-
-interface ChatRoom {
-  id: string
-  partnerId: string
-  partnerName: string
-  participants: string[]
-  messages: ChatMessage[]
-  createdAt: string
-  messageType: string
-}
-
-interface ChatMessage {
-  id: string
-  senderId: string
-  content: string
-  timestamp: string
+  name: string
+  grade: number | null
 }
 
 export default function MessagesPage() {
   const router = useRouter()
   const { t } = useLanguage()
+  const { profile, isLoading: isAuthLoading, supabase } = useMyProfile()
+
   const [activeTab, setActiveTab] = useState('send')
-  const { profile, isLoading: isAuthLoading } = useMyProfile()
-  
-  // Send message form
+  const [isDataLoading, setIsDataLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+
   const [selectedGrade, setSelectedGrade] = useState<string>('')
   const [selectedStudents, setSelectedStudents] = useState<string[]>([])
   const [messageType, setMessageType] = useState('')
   const [messageContent, setMessageContent] = useState('')
-  
-  // Messages
-  const [incomingMessages, setIncomingMessages] = useState<IncomingMessage[]>([])
-  const [outgoingMessages, setOutgoingMessages] = useState<OutgoingMessage[]>([])
-  const [onHoldMessages, setOnHoldMessages] = useState<IncomingMessage[]>([])
-  const [chatRooms, setChatRooms] = useState<ChatRoom[]>([])
-  const [selectedChatRoom, setSelectedChatRoom] = useState<string | null>(null)
+
+  const [students, setStudents] = useState<StudentOption[]>([])
+  const [messages, setMessages] = useState<MessageRow[]>([])
+
+  const [selectedChatPartner, setSelectedChatPartner] = useState<string | null>(null)
   const [chatInput, setChatInput] = useState('')
+
+  const loadPageData = useCallback(async () => {
+    if (!profile) return
+
+    setIsDataLoading(true)
+    setLoadError(null)
+
+    const [{ data: profileRows, error: profileError }, { data: messageRows, error: messageError }] =
+      await Promise.all([
+        supabase.from('profiles').select('id, name, grade').order('name', { ascending: true }),
+        supabase
+          .from('messages')
+          .select('id, sender_id, receiver_id, type, content, status, created_at')
+          .or(`sender_id.eq.${profile.id},receiver_id.eq.${profile.id}`)
+          .order('created_at', { ascending: false }),
+      ])
+
+    if (profileError || messageError) {
+      setStudents([])
+      setMessages([])
+      setLoadError(profileError?.message || messageError?.message || '알 수 없는 오류')
+      setIsDataLoading(false)
+      return
+    }
+
+    const safeProfiles = ((profileRows as StudentOption[]) || []).filter((s) => s.id !== profile.id)
+    const safeMessages = (messageRows as MessageRow[]) || []
+    setStudents(safeProfiles)
+    setMessages(safeMessages)
+    setIsDataLoading(false)
+  }, [profile, supabase])
 
   useEffect(() => {
     if (isAuthLoading) return
@@ -82,37 +92,22 @@ export default function MessagesPage() {
       router.push('/login')
       return
     }
-    
-    const allMessages = readJSON<any[]>('kgscp_all_messages', [])
-    const safeMessages = Array.isArray(allMessages) ? allMessages : []
-    
-    // Incoming: messages sent TO current user
-    const incoming = safeMessages.filter((msg: any) => 
-      msg.receiverId === profile.id && msg.status === 'pending'
-    )
-    
-    // Outgoing: messages sent FROM current user
-    const outgoing = safeMessages.filter((msg: any) => 
-      msg.senderId === profile.id
-    )
-    
-    // On-hold: messages current user put on hold
-    const onHold = safeMessages.filter((msg: any) => 
-      msg.receiverId === profile.id && msg.status === 'on-hold'
-    )
-    
-    setIncomingMessages(incoming)
-    setOutgoingMessages(outgoing)
-    setOnHoldMessages(onHold)
-    
-    // Load chat rooms for current user
-    const rooms = readJSON<any[]>('kgscp_chat_rooms', [])
-    const safeRooms = Array.isArray(rooms) ? rooms : []
-    const myRooms = safeRooms.filter((room: any) => 
-      room.participants.includes(profile.id)
-    )
-    setChatRooms(myRooms)
-  }, [router, isAuthLoading, profile])
+    void loadPageData()
+  }, [router, isAuthLoading, profile, loadPageData])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const toId = new URLSearchParams(window.location.search).get('to')
+    if (!toId || selectedStudents.length > 0) return
+    const receiver = students.find((student) => student.id === toId)
+    if (!receiver) return
+
+    setSelectedStudents([toId])
+    setActiveTab('send')
+    if (receiver.grade !== null) {
+      setSelectedGrade(receiver.grade.toString())
+    }
+  }, [students, selectedStudents.length])
 
   if (isAuthLoading) {
     return null
@@ -122,179 +117,184 @@ export default function MessagesPage() {
     return null
   }
 
-  const registeredUsers = readJSON<any[]>('kgscp_registered_users', [])
-  const safeRegisteredUsers = Array.isArray(registeredUsers) ? registeredUsers : []
-  const gradeStudents = selectedGrade 
-    ? safeRegisteredUsers.filter((s: any) => s.grade.toString() === selectedGrade && s.id !== profile.id)
+  const studentNameMap = useMemo(() => {
+    const map = new Map<string, string>()
+    map.set(profile.id, profile.name)
+    students.forEach((student) => map.set(student.id, student.name))
+    return map
+  }, [profile, students])
+
+  const gradeStudents = selectedGrade
+    ? students.filter((s) => s.grade !== null && s.grade.toString() === selectedGrade)
     : []
 
-  const handleSendMessage = (e: React.FormEvent) => {
-    e.preventDefault()
-    
-    if (!selectedStudents.length || !messageType || !messageContent.trim()) {
-      alert(t('fillAllFields'))
-      return
-    }
+  const incomingMessages = messages.filter(
+    (msg) => msg.receiver_id === profile.id && msg.status === 'pending'
+  )
+  const outgoingMessages = messages.filter((msg) => msg.sender_id === profile.id)
+  const onHoldMessages = messages.filter(
+    (msg) => msg.receiver_id === profile.id && msg.status === 'on_hold'
+  )
 
-    const allMessages = readJSON<any[]>('kgscp_all_messages', [])
-    const updatedMessages = Array.isArray(allMessages) ? [...allMessages] : []
-
-    selectedStudents.forEach(studentId => {
-      const student = safeRegisteredUsers.find((s: any) => s.id === studentId)
-      if (!student) return
-
-      const newMessage = {
-        id: 'msg-' + Date.now() + '-' + studentId,
-        senderId: profile.id,
-        senderName: profile.name,
-        receiverId: studentId,
-        receiverName: student.name,
-        type: messageType,
-        content: messageContent,
-        timestamp: new Date().toISOString(),
-        status: 'pending'
+  const chatPartnerIds = useMemo(() => {
+    const ids: string[] = []
+    const seen = new Set<string>()
+    for (const msg of messages) {
+      if (msg.status !== 'accepted') continue
+      if (msg.sender_id !== profile.id && msg.receiver_id !== profile.id) continue
+      const partnerId = msg.sender_id === profile.id ? msg.receiver_id : msg.sender_id
+      if (!seen.has(partnerId)) {
+        seen.add(partnerId)
+        ids.push(partnerId)
       }
-
-      updatedMessages.push(newMessage)
-    })
-    
-    writeJSON('kgscp_all_messages', updatedMessages)
-
-    // Update outgoing messages for current user
-    const myOutgoing = updatedMessages.filter((msg: any) => msg.senderId === profile.id)
-    setOutgoingMessages(myOutgoing)
-
-    alert(t('messageSent'))
-    setSelectedGrade('')
-    setSelectedStudents([])
-    setMessageType('')
-    setMessageContent('')
-  }
-
-  const handleAcceptMessage = (messageId: string) => {
-    const allMessages = readJSON<any[]>('kgscp_all_messages', [])
-    const safeMessages = Array.isArray(allMessages) ? [...allMessages] : []
-    const messageIndex = safeMessages.findIndex((m: any) => m.id === messageId)
-    if (messageIndex === -1) return
-    
-    const message = safeMessages[messageIndex]
-
-    safeMessages[messageIndex] = { ...message, status: 'accepted' }
-    writeJSON('kgscp_all_messages', safeMessages)
-
-    // Update local state
-    const updatedIncoming = incomingMessages.filter(m => m.id !== messageId)
-    setIncomingMessages(updatedIncoming)
-
-    const newRoom: ChatRoom = {
-      id: 'room-' + Date.now(),
-      partnerId: message.senderId,
-      partnerName: message.senderName,
-      messageType: message.type, // Store message type
-      participants: [profile.id, message.senderId],
-      messages: [],
-      createdAt: new Date().toISOString()
     }
+    return ids
+  }, [messages, profile.id])
 
-    const rooms = readJSON<any[]>('kgscp_chat_rooms', [])
-    const updatedRooms = Array.isArray(rooms) ? [...rooms, newRoom] : [newRoom]
-    writeJSON('kgscp_chat_rooms', updatedRooms)
-    setChatRooms(updatedRooms)
-
-    alert(t('messageAccepted'))
-  }
-
-  const handleRejectMessage = (messageId: string) => {
-    if (!confirm(t('confirmReject'))) return
-
-    const allMessages = readJSON<any[]>('kgscp_all_messages', [])
-    const safeMessages = Array.isArray(allMessages) ? [...allMessages] : []
-    const messageIndex = safeMessages.findIndex((m: any) => m.id === messageId)
-    if (messageIndex !== -1) {
-      safeMessages[messageIndex] = { ...safeMessages[messageIndex], status: 'rejected' }
-      writeJSON('kgscp_all_messages', safeMessages)
-    }
-
-    const updatedIncoming = incomingMessages.filter(m => m.id !== messageId)
-    setIncomingMessages(updatedIncoming)
-
-    alert(t('messageRejected'))
-  }
-
-  const handleHoldMessage = (messageId: string) => {
-    const allMessages = readJSON<any[]>('kgscp_all_messages', [])
-    const safeMessages = Array.isArray(allMessages) ? [...allMessages] : []
-    const messageIndex = safeMessages.findIndex((m: any) => m.id === messageId)
-    if (messageIndex === -1) return
-    
-    safeMessages[messageIndex] = { ...safeMessages[messageIndex], status: 'on-hold' }
-    writeJSON('kgscp_all_messages', safeMessages)
-
-    const message = incomingMessages.find(m => m.id === messageId)
-    if (message) {
-      const updatedMessage = { ...message, status: 'on-hold' as const }
-      setOnHoldMessages([...onHoldMessages, updatedMessage])
-    }
-
-    const updatedIncoming = incomingMessages.filter(m => m.id !== messageId)
-    setIncomingMessages(updatedIncoming)
-
-    alert(t('messagePending'))
-  }
-
-  const handleSendChatMessage = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!chatInput.trim() || !selectedChatRoom) return
-
-    const newChatMessage: ChatMessage = {
-      id: 'chat-' + Date.now(),
-      senderId: profile.id,
-      content: chatInput,
-      timestamp: new Date().toISOString()
-    }
-
-    const updatedRooms = chatRooms.map(room => {
-      if (room.id === selectedChatRoom) {
-        return {
-          ...room,
-          messages: [...room.messages, newChatMessage]
-        }
-      }
-      return room
-    })
-
-    setChatRooms(updatedRooms)
-    writeJSON('kgscp_chat_rooms', updatedRooms)
-    setChatInput('')
-  }
-
-  const currentChatRoom = chatRooms.find(r => r.id === selectedChatRoom)
+  const currentChatMessages = useMemo(() => {
+    if (!selectedChatPartner) return []
+    return messages
+      .filter((msg) => {
+        if (msg.status !== 'accepted') return false
+        const mineToPartner = msg.sender_id === profile.id && msg.receiver_id === selectedChatPartner
+        const partnerToMine = msg.sender_id === selectedChatPartner && msg.receiver_id === profile.id
+        return mineToPartner || partnerToMine
+      })
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+  }, [messages, profile.id, selectedChatPartner])
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString)
     const now = new Date()
     const diff = now.getTime() - date.getTime()
     const hours = Math.floor(diff / (1000 * 60 * 60))
-    
+
     if (hours < 1) return '방금 전'
     if (hours < 24) return `${hours}시간 전`
     return date.toLocaleDateString('ko-KR')
   }
 
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault()
+
+    if (!selectedStudents.length || !messageType || !messageContent.trim()) {
+      alert(t('fillAllFields'))
+      return
+    }
+
+    const payload = selectedStudents.map((receiverId) => ({
+      sender_id: profile.id,
+      receiver_id: receiverId,
+      type: messageType,
+      content: messageContent.trim(),
+      status: 'pending' as const,
+    }))
+
+    const { error } = await supabase.from('messages').insert(payload)
+    if (error) {
+      alert(error.message)
+      return
+    }
+
+    setSelectedGrade('')
+    setSelectedStudents([])
+    setMessageType('')
+    setMessageContent('')
+    await loadPageData()
+    alert(t('messageSent'))
+  }
+
+  const updateMessageStatus = async (messageId: string, nextStatus: MessageStatus) => {
+    const { error } = await supabase
+      .from('messages')
+      .update({ status: nextStatus })
+      .eq('id', messageId)
+      .eq('receiver_id', profile.id)
+    if (error) {
+      alert(error.message)
+      return false
+    }
+    await loadPageData()
+    return true
+  }
+
+  const handleAcceptMessage = async (messageId: string) => {
+    const target = incomingMessages.find((msg) => msg.id === messageId)
+    const success = await updateMessageStatus(messageId, 'accepted')
+    if (!success) return
+    if (target) {
+      setSelectedChatPartner(target.sender_id)
+      setActiveTab('chat')
+    }
+    alert(t('messageAccepted'))
+  }
+
+  const handleRejectMessage = async (messageId: string) => {
+    if (!confirm(t('confirmReject'))) return
+    const success = await updateMessageStatus(messageId, 'rejected')
+    if (!success) return
+    alert(t('messageRejected'))
+  }
+
+  const handleHoldMessage = async (messageId: string) => {
+    const success = await updateMessageStatus(messageId, 'on_hold')
+    if (!success) return
+    alert(t('messagePending'))
+  }
+
+  const handleSendChatMessage = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!selectedChatPartner || !chatInput.trim()) return
+
+    const { error } = await supabase.from('messages').insert({
+      sender_id: profile.id,
+      receiver_id: selectedChatPartner,
+      type: '채팅',
+      content: chatInput.trim(),
+      status: 'accepted',
+    })
+
+    if (error) {
+      alert(error.message)
+      return
+    }
+
+    setChatInput('')
+    await loadPageData()
+  }
+
+  const statusLabel = (status: MessageStatus) => {
+    if (status === 'accepted') return t('accepted')
+    if (status === 'rejected') return t('rejected')
+    if (status === 'on_hold') return t('onHold')
+    return t('pending')
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
       <MainNav />
-      
+
       <main className="container mx-auto py-6 max-w-7xl px-4">
         <div className="mb-6">
           <h1 className="text-3xl font-bold">{t('messages')}</h1>
-          <p className="text-muted-foreground mt-1">
-            {t('sendAnonymousMessages')}
-          </p>
+          <p className="text-muted-foreground mt-1">{t('sendAnonymousMessages')}</p>
         </div>
 
+        {isDataLoading && (
+          <Card className="mb-6">
+            <CardContent className="py-8 text-center text-muted-foreground">로딩중...</CardContent>
+          </Card>
+        )}
+
+        {!isDataLoading && loadError && (
+          <Card className="mb-6">
+            <CardContent className="py-8 text-center text-muted-foreground">
+              데이터 로드 실패: {loadError}
+            </CardContent>
+          </Card>
+        )}
+
         <div className="grid lg:grid-cols-3 gap-6">
-          {/* Send Message Form */}
           <Card>
             <CardHeader>
               <CardTitle>{t('sendMessage')}</CardTitle>
@@ -322,16 +322,16 @@ export default function MessagesPage() {
                   <Label>{t('receiver')}</Label>
                   <ScrollArea className="h-32 border rounded-md p-2">
                     {gradeStudents.length > 0 ? (
-                      gradeStudents.map((student: any) => (
+                      gradeStudents.map((student) => (
                         <div key={student.id} className="flex items-center gap-2 p-2">
                           <input
                             type="checkbox"
                             checked={selectedStudents.includes(student.id)}
                             onChange={(e) => {
                               if (e.target.checked) {
-                                setSelectedStudents([...selectedStudents, student.id])
+                                setSelectedStudents((prev) => [...prev, student.id])
                               } else {
-                                setSelectedStudents(selectedStudents.filter(id => id !== student.id))
+                                setSelectedStudents((prev) => prev.filter((id) => id !== student.id))
                               }
                             }}
                           />
@@ -346,7 +346,8 @@ export default function MessagesPage() {
                   </ScrollArea>
                   {selectedStudents.length > 0 && (
                     <p className="text-xs text-muted-foreground">
-                      {selectedStudents.length}{t('selected')}
+                      {selectedStudents.length}
+                      {t('selected')}
                     </p>
                   )}
                 </div>
@@ -385,7 +386,6 @@ export default function MessagesPage() {
             </CardContent>
           </Card>
 
-          {/* Message Lists and Chat Rooms */}
           <div className="lg:col-span-2">
             <Tabs value={activeTab} onValueChange={setActiveTab}>
               <TabsList className="grid w-full grid-cols-4">
@@ -402,23 +402,29 @@ export default function MessagesPage() {
                       <CardContent className="pt-4">
                         <div className="flex items-start justify-between mb-2">
                           <div>
-                            <p className="font-semibold">{t('to')}: {msg.receiverName}</p>
-                            <Badge variant="outline" className="mt-1">{msg.type}</Badge>
+                            <p className="font-semibold">
+                              {t('to')}: {studentNameMap.get(msg.receiver_id) || '알 수 없음'}
+                            </p>
+                            <Badge variant="outline" className="mt-1">
+                              {msg.type}
+                            </Badge>
                           </div>
-                          <Badge 
+                          <Badge
                             variant={
-                              msg.status === 'accepted' ? 'default' :
-                              msg.status === 'rejected' ? 'destructive' :
-                              msg.status === 'on-hold' ? 'secondary' : 'outline'
+                              msg.status === 'accepted'
+                                ? 'default'
+                                : msg.status === 'rejected'
+                                  ? 'destructive'
+                                  : msg.status === 'on_hold'
+                                    ? 'secondary'
+                                    : 'outline'
                             }
                           >
-                            {msg.status === 'accepted' ? t('accepted') :
-                             msg.status === 'rejected' ? t('rejected') :
-                             msg.status === 'on-hold' ? t('onHold') : t('pending')}
+                            {statusLabel(msg.status)}
                           </Badge>
                         </div>
                         <p className="text-sm text-muted-foreground mb-2">{msg.content}</p>
-                        <p className="text-xs text-muted-foreground">{formatDate(msg.timestamp)}</p>
+                        <p className="text-xs text-muted-foreground">{formatDate(msg.created_at)}</p>
                       </CardContent>
                     </Card>
                   ))
@@ -438,31 +444,35 @@ export default function MessagesPage() {
                       <CardContent className="pt-4">
                         <div className="flex items-start justify-between mb-2">
                           <div>
-                            <p className="font-semibold">{t('from')}: {t('anonymous')}</p>
-                            <Badge variant="outline" className="mt-1">{msg.type}</Badge>
+                            <p className="font-semibold">
+                              {t('from')}: {t('anonymous')}
+                            </p>
+                            <Badge variant="outline" className="mt-1">
+                              {msg.type}
+                            </Badge>
                           </div>
                         </div>
                         <p className="text-sm mb-3">{msg.content}</p>
-                        <p className="text-xs text-muted-foreground mb-3">{formatDate(msg.timestamp)}</p>
+                        <p className="text-xs text-muted-foreground mb-3">{formatDate(msg.created_at)}</p>
                         <div className="flex gap-2">
-                          <Button 
-                            size="sm" 
+                          <Button
+                            size="sm"
                             className="bg-green-600 hover:bg-green-700"
                             onClick={() => handleAcceptMessage(msg.id)}
                           >
                             <Check className="h-4 w-4 mr-1" />
                             {t('accept')}
                           </Button>
-                          <Button 
-                            size="sm" 
+                          <Button
+                            size="sm"
                             variant="destructive"
                             onClick={() => handleRejectMessage(msg.id)}
                           >
                             <X className="h-4 w-4 mr-1" />
                             {t('reject')}
                           </Button>
-                          <Button 
-                            size="sm" 
+                          <Button
+                            size="sm"
                             variant="outline"
                             onClick={() => handleHoldMessage(msg.id)}
                           >
@@ -489,23 +499,27 @@ export default function MessagesPage() {
                       <CardContent className="pt-4">
                         <div className="flex items-start justify-between mb-2">
                           <div>
-                            <p className="font-semibold">{t('from')}: {t('anonymous')}</p>
-                            <Badge variant="outline" className="mt-1">{msg.type}</Badge>
+                            <p className="font-semibold">
+                              {t('from')}: {t('anonymous')}
+                            </p>
+                            <Badge variant="outline" className="mt-1">
+                              {msg.type}
+                            </Badge>
                           </div>
                         </div>
                         <p className="text-sm mb-3">{msg.content}</p>
-                        <p className="text-xs text-muted-foreground mb-3">{formatDate(msg.timestamp)}</p>
+                        <p className="text-xs text-muted-foreground mb-3">{formatDate(msg.created_at)}</p>
                         <div className="flex gap-2">
-                          <Button 
-                            size="sm" 
+                          <Button
+                            size="sm"
                             className="bg-green-600 hover:bg-green-700"
                             onClick={() => handleAcceptMessage(msg.id)}
                           >
                             <Check className="h-4 w-4 mr-1" />
                             {t('accept')}
                           </Button>
-                          <Button 
-                            size="sm" 
+                          <Button
+                            size="sm"
                             variant="destructive"
                             onClick={() => handleRejectMessage(msg.id)}
                           >
@@ -533,22 +547,21 @@ export default function MessagesPage() {
                     </CardHeader>
                     <CardContent>
                       <ScrollArea className="h-96">
-                        {chatRooms.length > 0 ? (
+                        {chatPartnerIds.length > 0 ? (
                           <div className="space-y-2">
-                            {chatRooms.map((room) => (
+                            {chatPartnerIds.map((partnerId) => (
                               <Button
-                                key={room.id}
-                                variant={selectedChatRoom === room.id ? "secondary" : "ghost"}
+                                key={partnerId}
+                                variant={selectedChatPartner === partnerId ? 'secondary' : 'ghost'}
                                 className="w-full justify-start flex-col items-start h-auto py-2"
-                                onClick={() => setSelectedChatRoom(room.id)}
+                                onClick={() => setSelectedChatPartner(partnerId)}
                               >
                                 <div className="flex items-center gap-2 w-full">
                                   <MessageSquare className="h-4 w-4" />
-                                  <span className="font-medium">{room.partnerName}</span>
+                                  <span className="font-medium">
+                                    {studentNameMap.get(partnerId) || '알 수 없음'}
+                                  </span>
                                 </div>
-                                <span className="text-xs text-muted-foreground ml-6">
-                                  {room.messageType}
-                                </span>
                               </Button>
                             ))}
                           </div>
@@ -562,26 +575,28 @@ export default function MessagesPage() {
                   </Card>
 
                   <Card className="md:col-span-2">
-                    {currentChatRoom ? (
+                    {selectedChatPartner ? (
                       <>
                         <CardHeader>
-                          <CardTitle className="text-base">{currentChatRoom.partnerName}</CardTitle>
+                          <CardTitle className="text-base">
+                            {studentNameMap.get(selectedChatPartner) || '알 수 없음'}
+                          </CardTitle>
                         </CardHeader>
                         <CardContent>
                           <ScrollArea className="h-80 mb-4 p-4 border rounded-md">
                             <div className="space-y-3">
-                              {currentChatRoom.messages.map((msg) => (
+                              {currentChatMessages.map((msg) => (
                                 <div
                                   key={msg.id}
                                   className={cn(
                                     'flex',
-                                    msg.senderId === profile.id ? 'justify-end' : 'justify-start'
+                                    msg.sender_id === profile.id ? 'justify-end' : 'justify-start'
                                   )}
                                 >
                                   <div
                                     className={cn(
                                       'max-w-[70%] rounded-lg px-3 py-2',
-                                      msg.senderId === profile.id
+                                      msg.sender_id === profile.id
                                         ? 'bg-indigo-600 text-white'
                                         : 'bg-gray-100 dark:bg-gray-800'
                                     )}
@@ -590,6 +605,11 @@ export default function MessagesPage() {
                                   </div>
                                 </div>
                               ))}
+                              {currentChatMessages.length === 0 && (
+                                <p className="text-sm text-muted-foreground text-center py-4">
+                                  아직 대화가 없습니다
+                                </p>
+                              )}
                             </div>
                           </ScrollArea>
                           <form onSubmit={handleSendChatMessage} className="flex gap-2">

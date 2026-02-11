@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MainNav } from '@/components/main-nav'
 import { useRouter, useParams } from 'next/navigation'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -11,191 +11,177 @@ import { Textarea } from '@/components/ui/textarea'
 import { ThumbsUp, ThumbsDown, MessageSquare, ChevronLeft, Trash2 } from 'lucide-react'
 import Link from 'next/link'
 import { Separator } from '@/components/ui/separator'
-import { readJSON, writeJSON } from '@/lib/storage'
 import { useMyProfile } from '@/hooks/use-my-profile'
+
+type PostDetail = {
+  id: string
+  author_id: string
+  author_name: string
+  category: string
+  title: string
+  content: string
+  is_anonymous: boolean
+  created_at: string
+  likes_count: number
+  dislikes_count: number
+  comments_count: number
+}
+
+type FlatComment = {
+  id: string
+  post_id: string
+  parent_comment_id: string | null
+  author_id: string
+  author_name: string
+  content: string
+  is_anonymous: boolean
+  created_at: string
+}
+
+type CommentNode = FlatComment & {
+  replies: CommentNode[]
+}
+
+const buildCommentTree = (flat: FlatComment[]): CommentNode[] => {
+  const byId = new Map<string, CommentNode>()
+  const roots: CommentNode[] = []
+  for (const c of flat) byId.set(c.id, { ...c, replies: [] })
+  for (const c of flat) {
+    const node = byId.get(c.id)!
+    if (c.parent_comment_id && byId.has(c.parent_comment_id)) {
+      byId.get(c.parent_comment_id)!.replies.push(node)
+    } else {
+      roots.push(node)
+    }
+  }
+  return roots
+}
 
 export default function BoardPostPage() {
   const router = useRouter()
   const params = useParams() as { id?: string | string[] }
   const postId = Array.isArray(params.id) ? params.id[0] : params.id
-  const [post, setPost] = useState<any>(null)
-  const [hasCountedView, setHasCountedView] = useState(false)
+  const { profile, isLoading: isAuthLoading, supabase } = useMyProfile()
+
+  const [isPageLoading, setIsPageLoading] = useState(true)
+  const [post, setPost] = useState<PostDetail | null>(null)
+  const [comments, setComments] = useState<FlatComment[]>([])
   const [comment, setComment] = useState('')
   const [replyTo, setReplyTo] = useState<string | null>(null)
-  const [isLiked, setIsLiked] = useState(false)
-  const [isDisliked, setIsDisliked] = useState(false)
   const [isAnonymousComment, setIsAnonymousComment] = useState(false)
-  const { profile, isLoading: isAuthLoading } = useMyProfile()
+  const [reaction, setReaction] = useState<'like' | 'dislike' | null>(null)
 
-  const persistPost = (updatedPost: any) => {
-    const posts = readJSON<any[]>('kgscp_posts', [])
-    const updatedPosts = Array.isArray(posts)
-      ? posts.map((p: any) => (p.id === updatedPost.id ? updatedPost : p))
-      : [updatedPost]
-    writeJSON('kgscp_posts', updatedPosts)
-  }
+  const loadPostPage = useCallback(async () => {
+    if (!postId || !profile) return
+    setIsPageLoading(true)
+
+    const [
+      { data: postData, error: postError },
+      { data: commentData, error: commentError },
+      { data: myReaction, error: reactionError },
+    ] = await Promise.all([
+      supabase
+        .from('post_summaries')
+        .select(
+          'id, author_id, author_name, category, title, content, is_anonymous, created_at, likes_count, dislikes_count, comments_count'
+        )
+        .eq('id', postId)
+        .maybeSingle(),
+      supabase
+        .from('comment_summaries')
+        .select('id, post_id, parent_comment_id, author_id, author_name, content, is_anonymous, created_at')
+        .eq('post_id', postId)
+        .order('created_at', { ascending: true }),
+      supabase.from('reactions').select('reaction').eq('post_id', postId).eq('user_id', profile.id).maybeSingle(),
+    ])
+
+    if (postError || !postData) {
+      setPost(null)
+      setComments([])
+      setReaction(null)
+      setIsPageLoading(false)
+      return
+    }
+
+    setPost(postData as PostDetail)
+    setComments((commentData as FlatComment[]) || [])
+    setReaction((myReaction?.reaction as 'like' | 'dislike' | null) || null)
+    if (commentError || reactionError) {
+      // Non-fatal: page can still render without these.
+    }
+    setIsPageLoading(false)
+  }, [postId, profile, supabase])
 
   useEffect(() => {
     if (!isAuthLoading && !profile) {
       router.push('/login')
       return
     }
+    if (!postId || !profile) return
+    void loadPostPage()
+  }, [router, isAuthLoading, profile, postId, loadPostPage])
 
-    if (!postId) return
+  const commentTree = useMemo(() => buildCommentTree(comments), [comments])
 
-    const posts = readJSON<any[]>('kgscp_posts', [])
-    const foundPost = Array.isArray(posts) ? posts.find((p: any) => p.id === postId) : null
-    
-    if (foundPost) {
-      const normalizedPost = {
-        ...foundPost,
-        comments: Array.isArray(foundPost.comments) ? foundPost.comments : [],
-        dislikes: foundPost.dislikes ?? 0,
-        likes: foundPost.likes ?? 0,
-        views: foundPost.views || 0,
-      }
-      
-      setPost(normalizedPost)
-    }
-  }, [router, postId, isAuthLoading, profile])
+  const handleReaction = async (next: 'like' | 'dislike') => {
+    if (!profile || !post) return
 
-  useEffect(() => {
-    if (!post || hasCountedView) return
-    setHasCountedView(true)
-
-    const updatedPost = { ...post, views: (post.views || 0) + 1 }
-    setPost(updatedPost)
-    persistPost(updatedPost)
-  }, [post, hasCountedView])
-
-  if (isAuthLoading) {
-    return null
-  }
-
-  if (!profile || !post) {
-    return null
-  }
-
-  const addReplyToComments = (comments: any[], targetId: string, reply: any): any[] => {
-    return comments.map((c) => {
-      if (c.id === targetId) {
-        const nextReplies = Array.isArray(c.replies) ? c.replies : []
-        return { ...c, replies: [...nextReplies, reply] }
-      }
-      if (Array.isArray(c.replies) && c.replies.length > 0) {
-        return { ...c, replies: addReplyToComments(c.replies, targetId, reply) }
-      }
-      return c
-    })
-  }
-
-  const removeCommentFromComments = (comments: any[], targetId: string): any[] => {
-    return comments
-      .filter((c) => c.id !== targetId)
-      .map((c) => ({
-        ...c,
-        replies: Array.isArray(c.replies) ? removeCommentFromComments(c.replies, targetId) : [],
-      }))
-  }
-
-  const handleLike = () => {
-    const likes = post.likes || 0
-    const dislikes = post.dislikes || 0
-    let nextLikes = likes
-    let nextDislikes = dislikes
-    let nextIsLiked = isLiked
-    let nextIsDisliked = isDisliked
-
-    if (isLiked) {
-      nextLikes = Math.max(0, likes - 1)
-      nextIsLiked = false
+    if (reaction === next) {
+      const { error } = await supabase.from('reactions').delete().eq('post_id', post.id).eq('user_id', profile.id)
+      if (error) return
     } else {
-      nextLikes = likes + 1
-      nextIsLiked = true
-      if (isDisliked) {
-        nextDislikes = Math.max(0, dislikes - 1)
-        nextIsDisliked = false
-      }
+      const { error } = await supabase.from('reactions').upsert(
+        { post_id: post.id, user_id: profile.id, reaction: next },
+        { onConflict: 'post_id,user_id' }
+      )
+      if (error) return
     }
 
-    const updatedPost = { ...post, likes: nextLikes, dislikes: nextDislikes }
-    setIsLiked(nextIsLiked)
-    setIsDisliked(nextIsDisliked)
-    setPost(updatedPost)
-    persistPost(updatedPost)
+    await loadPostPage()
   }
 
-  const handleDislike = () => {
-    const likes = post.likes || 0
-    const dislikes = post.dislikes || 0
-    let nextLikes = likes
-    let nextDislikes = dislikes
-    let nextIsLiked = isLiked
-    let nextIsDisliked = isDisliked
-
-    if (isDisliked) {
-      nextDislikes = Math.max(0, dislikes - 1)
-      nextIsDisliked = false
-    } else {
-      nextDislikes = dislikes + 1
-      nextIsDisliked = true
-      if (isLiked) {
-        nextLikes = Math.max(0, likes - 1)
-        nextIsLiked = false
-      }
-    }
-
-    const updatedPost = { ...post, likes: nextLikes, dislikes: nextDislikes }
-    setIsLiked(nextIsLiked)
-    setIsDisliked(nextIsDisliked)
-    setPost(updatedPost)
-    persistPost(updatedPost)
-  }
-
-  const handleCommentSubmit = (e: React.FormEvent) => {
+  const handleCommentSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!comment.trim()) return
+    if (!profile || !post || !comment.trim()) return
 
-    const newComment = {
-      id: 'comment-' + Date.now(),
-      author: profile.name,
-      authorId: profile.id,
-      isAnonymous: isAnonymousComment,
-      content: comment,
-      createdAt: new Date().toISOString(),
-      replies: []
+    const { error } = await supabase.from('comments').insert({
+      post_id: post.id,
+      author_id: profile.id,
+      parent_comment_id: replyTo,
+      content: comment.trim(),
+      is_anonymous: isAnonymousComment,
+    })
+
+    if (error) {
+      alert(error.message)
+      return
     }
 
-    const currentComments = Array.isArray(post.comments) ? post.comments : []
-    const updatedComments = replyTo
-      ? addReplyToComments(currentComments, replyTo, newComment)
-      : [...currentComments, newComment]
-
-    const updatedPost = { ...post, comments: updatedComments }
-    setPost(updatedPost)
-    persistPost(updatedPost)
     setComment('')
     setReplyTo(null)
     setIsAnonymousComment(false)
+    await loadPostPage()
   }
 
-  const handleDeletePost = () => {
-    if (confirm('정말로 이 게시글을 삭제하시겠습니까?')) {
-      const posts = readJSON<any[]>('kgscp_posts', [])
-      const updatedPosts = Array.isArray(posts) ? posts.filter((p: any) => p.id !== post.id) : []
-      writeJSON('kgscp_posts', updatedPosts)
-      router.push('/boards')
+  const handleDeletePost = async () => {
+    if (!post) return
+    if (!confirm('정말로 이 게시글을 삭제하시겠습니까?')) return
+    const { error } = await supabase.from('posts').delete().eq('id', post.id)
+    if (error) {
+      alert(error.message)
+      return
     }
+    router.push('/boards')
   }
 
-  const handleDeleteComment = (commentId: string) => {
-    if (confirm('정말로 이 댓글을 삭제하시겠습니까?')) {
-      const currentComments = Array.isArray(post.comments) ? post.comments : []
-      const updatedComments = removeCommentFromComments(currentComments, commentId)
-      const updatedPost = { ...post, comments: updatedComments }
-      setPost(updatedPost)
-      persistPost(updatedPost)
+  const handleDeleteComment = async (commentId: string) => {
+    if (!confirm('정말로 이 댓글을 삭제하시겠습니까?')) return
+    const { error } = await supabase.from('comments').delete().eq('id', commentId)
+    if (error) {
+      alert(error.message)
+      return
     }
+    await loadPostPage()
   }
 
   const formatDate = (dateString: string) => {
@@ -205,46 +191,36 @@ export default function BoardPostPage() {
     const now = new Date()
     const diff = now.getTime() - date.getTime()
     const hours = Math.floor(diff / (1000 * 60 * 60))
-    
     if (hours < 1) return '방금 전'
     if (hours < 24) return `${hours}시간 전`
     return date.toLocaleDateString('ko-KR')
   }
 
-  const renderComments = (comments: any[], depth = 0) => {
-    return comments.map((comment) => (
-      <div key={comment.id} className={depth > 0 ? 'ml-8 border-l-2 pl-4' : ''}>
+  const renderComments = (nodes: CommentNode[], depth = 0) =>
+    nodes.map((node) => (
+      <div key={node.id} className={depth > 0 ? 'ml-8 border-l-2 pl-4' : ''}>
         <div className="flex gap-3 mb-4">
           <Avatar className="h-9 w-9 shrink-0">
             <AvatarFallback className="bg-indigo-100 text-indigo-700">
-              {comment.isAnonymous ? '?' : comment.author.charAt(0)}
+              {node.is_anonymous ? '?' : node.author_name?.trim()?.charAt(0) || 'U'}
             </AvatarFallback>
           </Avatar>
           <div className="flex-1">
             <div className="flex items-center gap-2 mb-1">
-              <span className="font-semibold text-sm">
-                {comment.isAnonymous ? '익명' : comment.author}
-              </span>
-              <span className="text-xs text-muted-foreground">
-                {formatDate(comment.createdAt)}
-              </span>
+              <span className="font-semibold text-sm">{node.is_anonymous ? '익명' : node.author_name}</span>
+              <span className="text-xs text-muted-foreground">{formatDate(node.created_at)}</span>
             </div>
-            <p className="text-sm leading-relaxed mb-2">{comment.content}</p>
+            <p className="text-sm leading-relaxed mb-2">{node.content}</p>
             <div className="flex items-center gap-2">
-              <Button 
-                variant="ghost" 
-                size="sm" 
-                className="h-7 px-2"
-                onClick={() => setReplyTo(comment.id)}
-              >
+              <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => setReplyTo(node.id)}>
                 답글
               </Button>
-              {comment.authorId === profile?.id && (
-                <Button 
-                  variant="ghost" 
-                  size="sm" 
+              {node.author_id === profile?.id && (
+                <Button
+                  variant="ghost"
+                  size="sm"
                   className="h-7 px-2 text-red-600 hover:text-red-700"
-                  onClick={() => handleDeleteComment(comment.id)}
+                  onClick={() => handleDeleteComment(node.id)}
                 >
                   <Trash2 className="h-3 w-3" />
                 </Button>
@@ -252,19 +228,43 @@ export default function BoardPostPage() {
             </div>
           </div>
         </div>
-        {comment.replies && comment.replies.length > 0 && (
-          <div className="mt-2">
-            {renderComments(comment.replies, depth + 1)}
-          </div>
-        )}
+        {node.replies.length > 0 && <div className="mt-2">{renderComments(node.replies, depth + 1)}</div>}
       </div>
     ))
+
+  if (isAuthLoading || isPageLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
+        <MainNav />
+        <main className="container mx-auto py-6 max-w-4xl px-4">
+          <Card className="p-8 text-center">
+            <p className="text-muted-foreground">로딩중...</p>
+          </Card>
+        </main>
+      </div>
+    )
+  }
+
+  if (!profile || !post) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
+        <MainNav />
+        <main className="container mx-auto py-6 max-w-4xl px-4">
+          <Card className="p-8 text-center">
+            <p className="text-muted-foreground">게시글을 찾을 수 없습니다.</p>
+            <Button className="mt-4" asChild>
+              <Link href="/boards">게시판으로 돌아가기</Link>
+            </Button>
+          </Card>
+        </main>
+      </div>
+    )
   }
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
       <MainNav />
-      
+
       <main className="container mx-auto py-6 max-w-4xl px-4">
         <Button variant="ghost" className="mb-4" asChild>
           <Link href="/boards">
@@ -283,24 +283,16 @@ export default function BoardPostPage() {
               <div className="flex items-center gap-3">
                 <Avatar className="h-10 w-10">
                   <AvatarFallback className="bg-indigo-600 text-white">
-                    {post.isAnonymous ? '?' : post.author.charAt(0)}
+                    {post.is_anonymous ? '?' : post.author_name?.trim()?.charAt(0) || 'U'}
                   </AvatarFallback>
                 </Avatar>
                 <div>
-                  <div className="font-semibold">
-                    {post.isAnonymous ? '익명' : post.author}
-                  </div>
-                  <span className="text-sm text-muted-foreground">
-                    {formatDate(post.createdAt)}
-                  </span>
+                  <div className="font-semibold">{post.is_anonymous ? '익명' : post.author_name}</div>
+                  <span className="text-sm text-muted-foreground">{formatDate(post.created_at)}</span>
                 </div>
               </div>
-              {post.authorId === profile.id && (
-                <Button 
-                  variant="destructive" 
-                  size="sm"
-                  onClick={handleDeletePost}
-                >
+              {post.author_id === profile.id && (
+                <Button variant="destructive" size="sm" onClick={handleDeletePost}>
                   <Trash2 className="h-4 w-4 mr-2" />
                   삭제
                 </Button>
@@ -313,26 +305,26 @@ export default function BoardPostPage() {
             </div>
             <div className="flex items-center gap-2 mt-6">
               <Button
-                variant={isLiked ? "default" : "outline"}
+                variant={reaction === 'like' ? 'default' : 'outline'}
                 size="sm"
                 className="gap-2"
-                onClick={handleLike}
+                onClick={() => handleReaction('like')}
               >
                 <ThumbsUp className="h-4 w-4" />
-                좋아요 {post.likes}
+                좋아요 {post.likes_count}
               </Button>
               <Button
-                variant={isDisliked ? "default" : "outline"}
+                variant={reaction === 'dislike' ? 'default' : 'outline'}
                 size="sm"
                 className="gap-2"
-                onClick={handleDislike}
+                onClick={() => handleReaction('dislike')}
               >
                 <ThumbsDown className="h-4 w-4" />
-                싫어요 {post.dislikes}
+                싫어요 {post.dislikes_count}
               </Button>
               <Button variant="outline" size="sm" className="gap-2">
                 <MessageSquare className="h-4 w-4" />
-                댓글 {post.comments.length}
+                댓글 {comments.length}
               </Button>
             </div>
           </CardContent>
@@ -340,21 +332,14 @@ export default function BoardPostPage() {
 
         <Card>
           <CardHeader>
-            <h2 className="font-semibold text-lg">
-              댓글 {post.comments.length}개
-            </h2>
+            <h2 className="font-semibold text-lg">댓글 {comments.length}개</h2>
           </CardHeader>
           <CardContent className="space-y-6">
             <form onSubmit={handleCommentSubmit} className="space-y-3">
               {replyTo && (
                 <div className="flex items-center justify-between bg-indigo-50 dark:bg-indigo-950 p-2 rounded">
                   <span className="text-sm">답글 작성 중...</span>
-                  <Button 
-                    type="button" 
-                    variant="ghost" 
-                    size="sm"
-                    onClick={() => setReplyTo(null)}
-                  >
+                  <Button type="button" variant="ghost" size="sm" onClick={() => setReplyTo(null)}>
                     취소
                   </Button>
                 </div>
@@ -383,12 +368,10 @@ export default function BoardPostPage() {
             <Separator />
 
             <div className="space-y-4">
-              {post.comments.length > 0 ? (
-                renderComments(post.comments)
+              {comments.length > 0 ? (
+                renderComments(commentTree)
               ) : (
-                <p className="text-center text-muted-foreground py-8">
-                  첫 댓글을 작성해보세요
-                </p>
+                <p className="text-center text-muted-foreground py-8">첫 댓글을 작성해보세요</p>
               )}
             </div>
           </CardContent>

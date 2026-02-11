@@ -94,7 +94,7 @@ export default function ProfilePage() {
     alert(t('profileUpdated'))
   }
 
-  const userInitial = profile.name.charAt(0).toUpperCase()
+  const userInitial = profile.name?.trim()?.charAt(0)?.toUpperCase() || 'U'
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950">

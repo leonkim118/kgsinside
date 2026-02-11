@@ -21,25 +21,23 @@ export default function LoginPage() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
-    
-    setTimeout(async () => {
-      try {
-        const supabase = supabaseBrowser()
-        const { error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        })
 
-        if (error) {
+    try {
+      const supabase = supabaseBrowser()
+      const { error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      })
+
+      if (error) {
         alert(t('loginFailed') + ': ' + error.message)
         return
       }
 
-        router.push('/home')
-      } finally {
-        setIsLoading(false)
-      }
-    }, 500)
+      router.push('/home')
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (

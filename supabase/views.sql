@@ -1,6 +1,8 @@
 -- Convenience views for efficient UI queries
 
-create or replace view public.post_summaries as
+create or replace view public.post_summaries
+with (security_invoker = true)
+as
 select
   p.id,
   p.author_id,
@@ -31,7 +33,9 @@ from public.posts p
 join public.profiles pr on pr.id = p.author_id;
 
 
-create or replace view public.comment_summaries as
+create or replace view public.comment_summaries
+with (security_invoker = true)
+as
 select
   c.id,
   c.post_id,
@@ -45,3 +49,5 @@ select
 from public.comments c
 join public.profiles pr on pr.id = c.author_id;
 
+grant select on public.post_summaries to authenticated;
+grant select on public.comment_summaries to authenticated;
