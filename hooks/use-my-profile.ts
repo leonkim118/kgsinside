@@ -7,6 +7,7 @@ import { useCallback } from 'react'
 
 export type Profile = {
   id: string
+  role?: 'user' | 'admin' | null
   username: string | null
   name: string
   grade: number | null
@@ -20,6 +21,27 @@ export type Profile = {
   other_scores: string | null
   gpa: string | null
   best_subject: string | null
+}
+
+const normalizeProfile = (raw: Partial<Profile> | null): Profile | null => {
+  if (!raw || !raw.id || !raw.name) return null
+  return {
+    id: raw.id,
+    role: raw.role === 'admin' ? 'admin' : 'user',
+    username: raw.username ?? null,
+    name: raw.name,
+    grade: raw.grade ?? null,
+    class_number: raw.class_number ?? null,
+    bio: raw.bio ?? null,
+    interests: raw.interests ?? null,
+    mbti: raw.mbti ?? null,
+    toefl: raw.toefl ?? null,
+    sat: raw.sat ?? null,
+    ap: raw.ap ?? null,
+    other_scores: raw.other_scores ?? null,
+    gpa: raw.gpa ?? null,
+    best_subject: raw.best_subject ?? null,
+  }
 }
 
 export function useMyProfile() {
@@ -42,9 +64,7 @@ export function useMyProfile() {
 
       const { data, error } = await supabase
         .from('profiles')
-        .select(
-          'id, username, name, grade, class_number, bio, interests, mbti, toefl, sat, ap, other_scores, gpa, best_subject'
-        )
+        .select('*')
         .eq('id', sessionUser.id)
         .maybeSingle()
 
@@ -70,15 +90,13 @@ export function useMyProfile() {
         } else {
           const { data: retryData } = await supabase
             .from('profiles')
-            .select(
-              'id, username, name, grade, class_number, bio, interests, mbti, toefl, sat, ap, other_scores, gpa, best_subject'
-            )
+            .select('*')
             .eq('id', sessionUser.id)
             .maybeSingle()
-          setProfile((retryData as Profile) || null)
+          setProfile(normalizeProfile(retryData as Partial<Profile> | null))
         }
       } else {
-        setProfile((data as Profile) || null)
+        setProfile(normalizeProfile(data as Partial<Profile> | null))
       }
       setIsLoading(false)
     },

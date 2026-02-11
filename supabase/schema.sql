@@ -4,6 +4,7 @@
 -- 1) Profiles (public user info)
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
+  role text not null default 'user',
   username text unique,
   name text not null,
   grade int,
@@ -21,6 +22,62 @@ create table if not exists public.profiles (
   updated_at timestamptz not null default now()
 );
 
+alter table public.profiles add column if not exists role text not null default 'user';
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'profiles_role_check'
+      and conrelid = 'public.profiles'::regclass
+  ) then
+    alter table public.profiles
+      add constraint profiles_role_check
+      check (role in ('user', 'admin'));
+  end if;
+end $$;
+
+create or replace function public.is_admin(user_id uuid)
+returns boolean
+language sql
+stable
+as $$
+  select exists (
+    select 1
+    from public.profiles p
+    where p.id = user_id
+      and p.role = 'admin'
+  );
+$$;
+
+grant execute on function public.is_admin(uuid) to authenticated;
+
+create or replace function public.prevent_profile_role_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  -- SQL Editor / service role updates have no auth.uid(); allow those admin operations.
+  if auth.uid() is null then
+    return new;
+  end if;
+
+  if old.role is distinct from new.role and not public.is_admin(auth.uid()) then
+    raise exception 'Only admins can change profile roles';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists prevent_profile_role_change on public.profiles;
+create trigger prevent_profile_role_change
+before update on public.profiles
+for each row execute procedure public.prevent_profile_role_change();
+
 alter table public.profiles enable row level security;
 
 drop policy if exists "profiles are readable by authenticated users" on public.profiles;
@@ -33,7 +90,7 @@ drop policy if exists "users can insert their own profile" on public.profiles;
 create policy "users can insert their own profile"
 on public.profiles for insert
 to authenticated
-with check (auth.uid() = id);
+with check (auth.uid() = id and role = 'user');
 
 drop policy if exists "users can update their own profile" on public.profiles;
 create policy "users can update their own profile"
@@ -41,6 +98,13 @@ on public.profiles for update
 to authenticated
 using (auth.uid() = id)
 with check (auth.uid() = id);
+
+drop policy if exists "admins can update any profile" on public.profiles;
+create policy "admins can update any profile"
+on public.profiles for update
+to authenticated
+using (public.is_admin(auth.uid()))
+with check (public.is_admin(auth.uid()));
 
 
 -- 2) Posts
@@ -76,17 +140,94 @@ drop policy if exists "posts updatable by owner" on public.posts;
 create policy "posts updatable by owner"
 on public.posts for update
 to authenticated
-using (auth.uid() = author_id)
-with check (auth.uid() = author_id);
+using (auth.uid() = author_id or public.is_admin(auth.uid()))
+with check (auth.uid() = author_id or public.is_admin(auth.uid()));
 
 drop policy if exists "posts deletable by owner" on public.posts;
 create policy "posts deletable by owner"
 on public.posts for delete
 to authenticated
-using (auth.uid() = author_id);
+using (auth.uid() = author_id or public.is_admin(auth.uid()));
 
 
--- 3) Comments (supports nesting via parent_comment_id)
+-- 3) Post attachments (images/files)
+create table if not exists public.post_attachments (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid not null references public.posts(id) on delete cascade,
+  uploader_id uuid not null references public.profiles(id) on delete cascade,
+  bucket text not null default 'post-images',
+  file_path text not null,
+  file_name text,
+  mime_type text,
+  size_bytes bigint,
+  sort_order int not null default 0,
+  created_at timestamptz not null default now(),
+  unique (post_id, file_path)
+);
+
+create index if not exists post_attachments_post_idx on public.post_attachments (post_id, sort_order asc);
+
+alter table public.post_attachments enable row level security;
+
+drop policy if exists "attachments readable by authenticated users" on public.post_attachments;
+create policy "attachments readable by authenticated users"
+on public.post_attachments for select
+to authenticated
+using (true);
+
+drop policy if exists "attachments insertable by uploader" on public.post_attachments;
+create policy "attachments insertable by uploader"
+on public.post_attachments for insert
+to authenticated
+with check (auth.uid() = uploader_id);
+
+drop policy if exists "attachments deletable by uploader or admin" on public.post_attachments;
+create policy "attachments deletable by uploader or admin"
+on public.post_attachments for delete
+to authenticated
+using (auth.uid() = uploader_id or public.is_admin(auth.uid()));
+
+
+-- Storage bucket/policies for post images
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'post-images',
+  'post-images',
+  true,
+  10485760,
+  array['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+)
+on conflict (id) do nothing;
+
+drop policy if exists "post images are readable" on storage.objects;
+create policy "post images are readable"
+on storage.objects for select
+to authenticated
+using (bucket_id = 'post-images');
+
+drop policy if exists "users can upload own post images" on storage.objects;
+create policy "users can upload own post images"
+on storage.objects for insert
+to authenticated
+with check (
+  bucket_id = 'post-images'
+  and auth.uid()::text = (storage.foldername(name))[1]
+);
+
+drop policy if exists "users can delete own post images or admins" on storage.objects;
+create policy "users can delete own post images or admins"
+on storage.objects for delete
+to authenticated
+using (
+  bucket_id = 'post-images'
+  and (
+    auth.uid()::text = (storage.foldername(name))[1]
+    or public.is_admin(auth.uid())
+  )
+);
+
+
+-- 4) Comments (supports nesting via parent_comment_id)
 create table if not exists public.comments (
   id uuid primary key default gen_random_uuid(),
   post_id uuid not null references public.posts(id) on delete cascade,
@@ -118,10 +259,10 @@ drop policy if exists "comments deletable by owner" on public.comments;
 create policy "comments deletable by owner"
 on public.comments for delete
 to authenticated
-using (auth.uid() = author_id);
+using (auth.uid() = author_id or public.is_admin(auth.uid()));
 
 
--- 4) Reactions (like/dislike)
+-- 5) Reactions (like/dislike)
 do $$
 begin
   if not exists (select 1 from pg_type where typname = 'reaction_type') then
@@ -165,7 +306,7 @@ to authenticated
 using (auth.uid() = user_id);
 
 
--- 5) Messages (DM)
+-- 6) Messages (DM)
 do $$
 begin
   if not exists (select 1 from pg_type where typname = 'message_status') then

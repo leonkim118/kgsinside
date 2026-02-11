@@ -15,6 +15,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Badge } from '@/components/ui/badge'
 import { useLanguage } from '@/lib/language-context'
 import { LanguageSelector } from '@/components/language-selector'
 import { useMyProfile } from '@/hooks/use-my-profile'
@@ -36,6 +37,7 @@ export function MainNav() {
   ]
 
   const userInitial = profile?.name?.charAt(0).toUpperCase() || 'U'
+  const isAdmin = profile?.role === 'admin'
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -83,7 +85,14 @@ export function MainNav() {
             <DropdownMenuContent align="end">
               <DropdownMenuLabel>
                 <div className="flex flex-col space-y-1">
-                  <p className="text-sm font-medium">{profile?.name}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium">{profile?.name}</p>
+                    {isAdmin && (
+                      <Badge variant="secondary" className="h-5 px-2 text-[10px]">
+                        {t('admin')}
+                      </Badge>
+                    )}
+                  </div>
                   <p className="text-xs text-muted-foreground">@{profile?.username}</p>
                 </div>
               </DropdownMenuLabel>

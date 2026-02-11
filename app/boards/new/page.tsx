@@ -14,12 +14,15 @@ import { Upload, X, ChevronLeft } from 'lucide-react'
 import Link from 'next/link'
 import { useMyProfile } from '@/hooks/use-my-profile'
 
-const categories = ['동아리', '학교 과제', '교과목', '교내 대회', '멘토 멘티', '기타']
+const categories = ['자유게시판', '동아리', '학교 과제', '교과목', '교내 대회', '멘토 멘티', '기타']
+const IMAGE_BUCKET = 'post-images'
+const MAX_IMAGE_SIZE = 10 * 1024 * 1024
 
 export default function NewPostPage() {
   const router = useRouter()
   const { profile, isLoading, supabase } = useMyProfile()
   const [files, setFiles] = useState<File[]>([])
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [formData, setFormData] = useState({
     title: '',
     category: '',
@@ -49,7 +52,7 @@ export default function NewPostPage() {
     setFiles(files.filter((_, i) => i !== index))
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
     if (!formData.category || !formData.title.trim() || !formData.content.trim()) {
@@ -57,13 +60,24 @@ export default function NewPostPage() {
       return
     }
 
-    ;(async () => {
+    if (files.some((file) => !file.type.startsWith('image/'))) {
+      alert('이미지 파일만 업로드할 수 있습니다.')
+      return
+    }
+
+    if (files.some((file) => file.size > MAX_IMAGE_SIZE)) {
+      alert('이미지 파일은 10MB 이하만 업로드할 수 있습니다.')
+      return
+    }
+
+    setIsSubmitting(true)
+    try {
       const { data, error } = await supabase
         .from('posts')
         .insert({
           author_id: profile.id,
-          title: formData.title,
-          content: formData.content,
+          title: formData.title.trim(),
+          content: formData.content.trim(),
           category: formData.category,
           is_anonymous: formData.isAnonymous,
         })
@@ -71,13 +85,62 @@ export default function NewPostPage() {
         .single()
 
       if (error) {
-        alert(error.message)
-        return
+        throw new Error(error.message)
       }
 
-      // TODO: files upload to Supabase Storage
+      const postId = data.id
+      const attachmentRows: Array<{
+        post_id: string
+        uploader_id: string
+        bucket: string
+        file_path: string
+        file_name: string
+        mime_type: string
+        size_bytes: number
+        sort_order: number
+      }> = []
+
+      for (const [index, file] of files.entries()) {
+        const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+        const filePath = `${profile.id}/${postId}/${Date.now()}-${index}-${sanitizedName}`
+
+        const { error: uploadError } = await supabase.storage
+          .from(IMAGE_BUCKET)
+          .upload(filePath, file, { upsert: false, contentType: file.type || 'image/*' })
+
+        if (uploadError) {
+          throw new Error(`이미지 업로드 실패: ${uploadError.message}`)
+        }
+
+        attachmentRows.push({
+          post_id: postId,
+          uploader_id: profile.id,
+          bucket: IMAGE_BUCKET,
+          file_path: filePath,
+          file_name: file.name,
+          mime_type: file.type || 'image/*',
+          size_bytes: file.size,
+          sort_order: index,
+        })
+      }
+
+      if (attachmentRows.length > 0) {
+        const { error: attachmentError } = await supabase
+          .from('post_attachments')
+          .insert(attachmentRows)
+
+        if (attachmentError) {
+          await supabase.storage.from(IMAGE_BUCKET).remove(attachmentRows.map((row) => row.file_path))
+          throw new Error(`첨부 저장 실패: ${attachmentError.message}`)
+        }
+      }
+
       router.push(`/boards/${data.id}`)
-    })()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '게시글 업로드 중 오류가 발생했습니다.')
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   return (
@@ -160,6 +223,7 @@ export default function NewPostPage() {
                   <input
                     id="files"
                     type="file"
+                    accept="image/*"
                     multiple
                     onChange={handleFileChange}
                     className="hidden"
@@ -194,8 +258,12 @@ export default function NewPostPage() {
                 <Button type="button" variant="outline" asChild>
                   <Link href="/boards">취소</Link>
                 </Button>
-                <Button type="submit" className="bg-indigo-600 hover:bg-indigo-700">
-                  게시글 올리기
+                <Button
+                  type="submit"
+                  className="bg-indigo-600 hover:bg-indigo-700"
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? '업로드 중...' : '게시글 올리기'}
                 </Button>
               </div>
             </CardContent>

@@ -38,6 +38,17 @@ type FlatComment = {
   created_at: string
 }
 
+type Attachment = {
+  id: string
+  bucket: string
+  file_path: string
+  file_name: string | null
+  mime_type: string | null
+  size_bytes: number | null
+  sort_order: number
+  public_url: string
+}
+
 type CommentNode = FlatComment & {
   replies: CommentNode[]
 }
@@ -70,6 +81,8 @@ export default function BoardPostPage() {
   const [replyTo, setReplyTo] = useState<string | null>(null)
   const [isAnonymousComment, setIsAnonymousComment] = useState(false)
   const [reaction, setReaction] = useState<'like' | 'dislike' | null>(null)
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const isAdmin = profile?.role === 'admin'
 
   const loadPostPage = useCallback(async () => {
     if (!postId || !profile) return
@@ -79,6 +92,7 @@ export default function BoardPostPage() {
       { data: postData, error: postError },
       { data: commentData, error: commentError },
       { data: myReaction, error: reactionError },
+      { data: attachmentData, error: attachmentError },
     ] = await Promise.all([
       supabase
         .from('post_summaries')
@@ -93,12 +107,18 @@ export default function BoardPostPage() {
         .eq('post_id', postId)
         .order('created_at', { ascending: true }),
       supabase.from('reactions').select('reaction').eq('post_id', postId).eq('user_id', profile.id).maybeSingle(),
+      supabase
+        .from('post_attachments')
+        .select('id, bucket, file_path, file_name, mime_type, size_bytes, sort_order')
+        .eq('post_id', postId)
+        .order('sort_order', { ascending: true }),
     ])
 
     if (postError || !postData) {
       setPost(null)
       setComments([])
       setReaction(null)
+      setAttachments([])
       setIsPageLoading(false)
       return
     }
@@ -106,7 +126,16 @@ export default function BoardPostPage() {
     setPost(postData as PostDetail)
     setComments((commentData as FlatComment[]) || [])
     setReaction((myReaction?.reaction as 'like' | 'dislike' | null) || null)
-    if (commentError || reactionError) {
+    if (attachmentData && !attachmentError) {
+      const parsed = (attachmentData as Omit<Attachment, 'public_url'>[]).map((row) => {
+        const publicUrl = supabase.storage.from(row.bucket).getPublicUrl(row.file_path).data.publicUrl
+        return { ...row, public_url: publicUrl }
+      })
+      setAttachments(parsed)
+    } else {
+      setAttachments([])
+    }
+    if (commentError || reactionError || attachmentError) {
       // Non-fatal: page can still render without these.
     }
     setIsPageLoading(false)
@@ -166,6 +195,21 @@ export default function BoardPostPage() {
   const handleDeletePost = async () => {
     if (!post) return
     if (!confirm('정말로 이 게시글을 삭제하시겠습니까?')) return
+
+    if (attachments.length > 0) {
+      const pathsByBucket = attachments.reduce<Record<string, string[]>>((acc, attachment) => {
+        if (!acc[attachment.bucket]) acc[attachment.bucket] = []
+        acc[attachment.bucket].push(attachment.file_path)
+        return acc
+      }, {})
+
+      await Promise.all(
+        Object.entries(pathsByBucket).map(([bucket, paths]) =>
+          supabase.storage.from(bucket).remove(paths)
+        )
+      )
+    }
+
     const { error } = await supabase.from('posts').delete().eq('id', post.id)
     if (error) {
       alert(error.message)
@@ -215,7 +259,7 @@ export default function BoardPostPage() {
               <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => setReplyTo(node.id)}>
                 답글
               </Button>
-              {node.author_id === profile?.id && (
+              {(node.author_id === profile?.id || isAdmin) && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -291,7 +335,7 @@ export default function BoardPostPage() {
                   <span className="text-sm text-muted-foreground">{formatDate(post.created_at)}</span>
                 </div>
               </div>
-              {post.author_id === profile.id && (
+              {(post.author_id === profile.id || isAdmin) && (
                 <Button variant="destructive" size="sm" onClick={handleDeletePost}>
                   <Trash2 className="h-4 w-4 mr-2" />
                   삭제
@@ -300,6 +344,28 @@ export default function BoardPostPage() {
             </div>
           </CardHeader>
           <CardContent>
+            {attachments.length > 0 && (
+              <div className="mb-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {attachments.map((attachment) => (
+                    <a
+                      key={attachment.id}
+                      href={attachment.public_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block overflow-hidden rounded-lg border bg-black/5 hover:opacity-95"
+                    >
+                      <img
+                        src={attachment.public_url}
+                        alt={attachment.file_name || '게시글 이미지'}
+                        className="h-64 w-full object-cover"
+                        loading="lazy"
+                      />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="prose dark:prose-invert max-w-none">
               <p className="whitespace-pre-wrap leading-relaxed">{post.content}</p>
             </div>

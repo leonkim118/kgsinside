@@ -46,6 +46,7 @@ const translations = {
     'myInfo': '내 정보',
     'messages': '쪽지',
     'settings': '설정',
+    'admin': '관리자',
     // Messages
     'sendAnonymousMessages': '익명으로 쪽지를 주고받으세요',
     'sendMessage': '메시지 보내기',
@@ -130,6 +131,7 @@ const translations = {
     'searchTitle': '제목 검색',
     'search': '검색...',
     'categoryAll': '전체',
+    'categoryFree': '자유게시판',
     'categoryClub': '동아리',
     'categoryAssignment': '학교 과제',
     'categorySubject': '교과목',
@@ -222,6 +224,7 @@ const translations = {
     'myInfo': 'Thông tin',
     'messages': 'Tin nhắn',
     'settings': 'Cài đặt',
+    'admin': 'Quản trị',
     // Messages
     'sendAnonymousMessages': 'Gửi và nhận tin nhắn ẩn danh',
     'sendMessage': 'Gửi tin nhắn',
@@ -306,6 +309,7 @@ const translations = {
     'searchTitle': 'Tìm tiêu đề',
     'search': 'Tìm kiếm...',
     'categoryAll': 'Tất cả',
+    'categoryFree': 'Bảng tự do',
     'categoryClub': 'Câu lạc bộ',
     'categoryAssignment': 'Bài tập trường',
     'categorySubject': 'Môn học',
@@ -398,6 +402,7 @@ const translations = {
     'myInfo': 'My Info',
     'messages': 'Messages',
     'settings': 'Settings',
+    'admin': 'Admin',
     // Messages
     'sendAnonymousMessages': 'Send and receive anonymous messages',
     'sendMessage': 'Send Message',
@@ -482,6 +487,7 @@ const translations = {
     'searchTitle': 'Search title',
     'search': 'Search...',
     'categoryAll': 'All',
+    'categoryFree': 'Free Board',
     'categoryClub': 'Club',
     'categoryAssignment': 'School Assignment',
     'categorySubject': 'Subject',

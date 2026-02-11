@@ -35,6 +35,47 @@ interface StudentOption {
   grade: number | null
 }
 
+const normalizeStatus = (value: unknown): MessageStatus => {
+  if (value === 'accepted' || value === 'rejected' || value === 'on_hold' || value === 'pending') {
+    return value
+  }
+  return 'pending'
+}
+
+const normalizeStudents = (rows: unknown): StudentOption[] => {
+  if (!Array.isArray(rows)) return []
+  return rows
+    .map((row) => {
+      const record = row as Partial<StudentOption>
+      if (!record.id || typeof record.name !== 'string') return null
+      return {
+        id: record.id,
+        name: record.name || 'Unknown',
+        grade: typeof record.grade === 'number' ? record.grade : null,
+      }
+    })
+    .filter((row): row is StudentOption => row !== null)
+}
+
+const normalizeMessages = (rows: unknown): MessageRow[] => {
+  if (!Array.isArray(rows)) return []
+  return rows
+    .map((row) => {
+      const record = row as Partial<MessageRow>
+      if (!record.id || !record.sender_id || !record.receiver_id) return null
+      return {
+        id: record.id,
+        sender_id: record.sender_id,
+        receiver_id: record.receiver_id,
+        type: typeof record.type === 'string' ? record.type : '메시지',
+        content: typeof record.content === 'string' ? record.content : '',
+        status: normalizeStatus(record.status),
+        created_at: typeof record.created_at === 'string' ? record.created_at : new Date().toISOString(),
+      }
+    })
+    .filter((row): row is MessageRow => row !== null)
+}
+
 export default function MessagesPage() {
   const router = useRouter()
   const { t } = useLanguage()
@@ -61,29 +102,36 @@ export default function MessagesPage() {
     setIsDataLoading(true)
     setLoadError(null)
 
-    const [{ data: profileRows, error: profileError }, { data: messageRows, error: messageError }] =
-      await Promise.all([
-        supabase.from('profiles').select('id, name, grade').order('name', { ascending: true }),
-        supabase
-          .from('messages')
-          .select('id, sender_id, receiver_id, type, content, status, created_at')
-          .or(`sender_id.eq.${profile.id},receiver_id.eq.${profile.id}`)
-          .order('created_at', { ascending: false }),
-      ])
+    try {
+      const [{ data: profileRows, error: profileError }, { data: messageRows, error: messageError }] =
+        await Promise.all([
+          supabase.from('profiles').select('id, name, grade').order('name', { ascending: true }),
+          supabase
+            .from('messages')
+            .select('id, sender_id, receiver_id, type, content, status, created_at')
+            .or(`sender_id.eq.${profile.id},receiver_id.eq.${profile.id}`)
+            .order('created_at', { ascending: false }),
+        ])
 
-    if (profileError || messageError) {
+      if (profileError || messageError) {
+        setStudents([])
+        setMessages([])
+        setLoadError(profileError?.message || messageError?.message || '알 수 없는 오류')
+        setIsDataLoading(false)
+        return
+      }
+
+      const safeProfiles = normalizeStudents(profileRows).filter((s) => s.id !== profile.id)
+      const safeMessages = normalizeMessages(messageRows)
+      setStudents(safeProfiles)
+      setMessages(safeMessages)
+      setIsDataLoading(false)
+    } catch (error) {
       setStudents([])
       setMessages([])
-      setLoadError(profileError?.message || messageError?.message || '알 수 없는 오류')
+      setLoadError(error instanceof Error ? error.message : '알 수 없는 오류')
       setIsDataLoading(false)
-      return
     }
-
-    const safeProfiles = ((profileRows as StudentOption[]) || []).filter((s) => s.id !== profile.id)
-    const safeMessages = (messageRows as MessageRow[]) || []
-    setStudents(safeProfiles)
-    setMessages(safeMessages)
-    setIsDataLoading(false)
   }, [profile, supabase])
 
   useEffect(() => {
@@ -104,7 +152,7 @@ export default function MessagesPage() {
 
     setSelectedStudents([toId])
     setActiveTab('send')
-    if (receiver.grade !== null) {
+    if (typeof receiver.grade === 'number') {
       setSelectedGrade(receiver.grade.toString())
     }
   }, [students, selectedStudents.length])
@@ -125,7 +173,7 @@ export default function MessagesPage() {
   }, [profile, students])
 
   const gradeStudents = selectedGrade
-    ? students.filter((s) => s.grade !== null && s.grade.toString() === selectedGrade)
+    ? students.filter((s) => typeof s.grade === 'number' && s.grade.toString() === selectedGrade)
     : []
 
   const incomingMessages = messages.filter(

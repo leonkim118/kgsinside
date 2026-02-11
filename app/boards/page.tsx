@@ -79,6 +79,7 @@ export default function BoardsPage() {
 
   const categories = [
     { value: '전체', label: t('categoryAll') },
+    { value: '자유게시판', label: t('categoryFree') },
     { value: '동아리', label: t('categoryClub') },
     { value: '학교 과제', label: t('categoryAssignment') },
     { value: '교과목', label: t('categorySubject') },
